@@ -1,0 +1,139 @@
+# Monitor externo do SuaIgreja: checa o site a cada 5 minutos, de fora do servidor,
+# e avisa no celular quando cair ou voltar. Este repositorio e PUBLICO de proposito
+# (minutos de Actions ilimitados) e NAO contem segredos: so URLs publicas.
+#
+# Segredos opcionais (Settings > Secrets and variables > Actions):
+#   NTFY_TOPIC        topico secreto do app ntfy (push no celular)
+#   CALLMEBOT_APIKEY  chave do CallMeBot (WhatsApp)   } os dois juntos
+#   ALERT_PHONE       telefone que recebe o WhatsApp  } ex.: 5522999999999
+#
+# Cada queda abre uma issue (historico do incidente); a recuperacao a fecha.
+#
+# Author: Bruno Linhares da Silveira
+# Author URI: https://digitallagos.com.br
+# @author Bruno Linhares da Silveira
+# @copyright 2026 Digital Lagos
+# @contact contato@digitallagos.com.br
+# Modificado em: 2026-09-29
+
+name: Monitor SuaIgreja
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: true
+
+env:
+  SITE: https://suaigreja.top
+  API: https://db.suaigreja.top
+  DIAS_ALERTA_CERTIFICADO: "14"
+  # Repete o aviso de "continua fora do ar" a cada N execucoes (6 x 5 min = 30 min)
+  REAVISAR_A_CADA: "6"
+
+jobs:
+  checar:
+    name: Checar site e banco
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checar
+        id: check
+        run: |
+          set -uo pipefail
+          falhas=""
+          # checar <nome> <url> <codigos aceitos, ex.: "200" ou "200|401"> [marcador no corpo]
+          checar() {
+            local nome="$1" url="$2" aceitos="$3" marcador="${4:-}" status="000" tempo="0"
+            for tentativa in 1 2 3; do
+              read -r status tempo < <(curl -s -o corpo.tmp -w '%{http_code} %{time_total}' --max-time 20 "$url" || echo "000 0")
+              if [[ "$status" =~ ^($aceitos)$ ]] && { [ -z "$marcador" ] || grep -q "$marcador" corpo.tmp; }; then
+                echo "OK   $nome -> $status (${tempo}s)"
+                return 0
+              fi
+              [ "$tentativa" -lt 3 ] && sleep 20
+            done
+            echo "FALHA $nome -> HTTP $status"
+            falhas+="- $nome ($url): HTTP $status"$'\n'
+          }
+          checar "Painel (health)"        "$SITE/health"                 "200"
+          checar "Painel (dashboard)"     "$SITE/dashboard"              "200"
+          checar "Pagina publica /modelo" "$SITE/modelo"                 "200" 'id="topo"'
+          checar "Banco/Auth (Kong)"      "$API/auth/v1/health"          "200|401"
+          checar "Banco/API (REST)"       "$API/rest/v1/"                "200|401"
+
+          # Validade dos certificados TLS
+          for host in suaigreja.top db.suaigreja.top; do
+            fim="$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)"
+            dias=$(( ( $(date -d "$fim" +%s) - $(date +%s) ) / 86400 ))
+            echo "TLS  $host vence em $dias dia(s)"
+            if [ "$dias" -lt "$DIAS_ALERTA_CERTIFICADO" ]; then
+              falhas+="- Certificado de $host vence em $dias dia(s)"$'\n'
+            fi
+          done
+
+          if [ -n "$falhas" ]; then
+            { echo "status=falha"; echo "relatorio<<EOF"; printf '%s' "$falhas"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Estado do incidente e aviso
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.check.outputs.status }}
+          RELATORIO: ${{ steps.check.outputs.relatorio }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          ALERT_PHONE: ${{ secrets.ALERT_PHONE }}
+        run: |
+          set -uo pipefail
+          avisar() { # avisar <titulo> <prioridade> <tags> <texto>
+            if [ -n "${NTFY_TOPIC:-}" ]; then
+              curl -s --max-time 20 -H "Title: $1" -H "Priority: $2" -H "Tags: $3" -d "$4" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || echo "ntfy falhou"
+            fi
+            if [ -n "${CALLMEBOT_APIKEY:-}" ] && [ -n "${ALERT_PHONE:-}" ]; then
+              curl -s --max-time 30 -X POST https://api.callmebot.com/whatsapp.php \
+                --data-urlencode "phone=$ALERT_PHONE" --data-urlencode "apikey=$CALLMEBOT_APIKEY" \
+                --data-urlencode "text=$1"$'\n'"$4" >/dev/null || echo "callmebot falhou"
+            fi
+          }
+          gh label create incidente --color B60205 --description "Site fora do ar" 2>/dev/null || true
+          aberta="$(gh issue list --label incidente --state open --json number --jq '.[0].number // empty')"
+
+          if [ "$STATUS" = "falha" ]; then
+            if [ -z "$aberta" ]; then
+              gh issue create --label incidente --title "Fora do ar desde $(date -u +%d/%m/%Y' '%H:%M) UTC" --body "$RELATORIO"
+              avisar "SuaIgreja FORA DO AR" "urgent" "rotating_light" "$RELATORIO"
+            else
+              gh issue comment "$aberta" --body "$(date -u +%H:%M) UTC - continua com problema:"$'\n'"$RELATORIO"
+              if [ $(( ${{ github.run_number }} % REAVISAR_A_CADA )) -eq 0 ]; then
+                avisar "SuaIgreja continua com problema" "high" "warning" "$RELATORIO"
+              fi
+            fi
+          elif [ -n "$aberta" ]; then
+            gh issue comment "$aberta" --body "Recuperado em $(date -u +%d/%m/%Y' '%H:%M) UTC."
+            gh issue close "$aberta"
+            avisar "SuaIgreja VOLTOU" "default" "white_check_mark" "Todos os testes passaram novamente."
+          fi
+
+      - name: Manter o agendamento ativo
+        # O GitHub desativa agendamentos de repositorios sem commits ha 60 dias.
+        run: |
+          set -euo pipefail
+          ultimo="$(git log -1 --format=%ct)"
+          if [ $(( $(date +%s) - ultimo )) -gt $(( 30 * 86400 )) ]; then
+            git config user.name "monitor-suaigreja"
+            git config user.email "monitor@users.noreply.github.com"
+            git commit --allow-empty -m "chore: manter agendamento ativo"
+            git push
+          fi
