@@ -60,7 +60,10 @@ jobs:
           checar() {
             local nome="$1" url="$2" aceitos="$3" marcador="${4:-}" status="000" tempo="0"
             for tentativa in 1 2 3; do
-              read -r status tempo < <(curl -s -o corpo.tmp -w '%{http_code} %{time_total}' --max-time 20 "$url" || echo "000 0")
+              resposta="$(curl -s -o corpo.tmp -w '%{http_code} %{time_total}' --max-time 20 "$url" || true)"
+              [ -n "$resposta" ] || resposta="000 0"
+              status="${resposta%% *}"
+              tempo="${resposta##* }"
               if [[ "$status" =~ ^($aceitos)$ ]] && { [ -z "$marcador" ] || grep -q "$marcador" corpo.tmp; }; then
                 echo "OK   $nome -> $status (${tempo}s)"
                 return 0
