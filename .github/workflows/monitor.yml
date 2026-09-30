@@ -114,9 +114,11 @@ jobs:
               curl -s --max-time 20 -H "Title: $1" -H "Priority: $2" -H "Tags: $3" -d "$4" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null || echo "ntfy falhou"
             fi
             if [ -n "${CALLMEBOT_APIKEY:-}" ] && [ -n "${ALERT_PHONE:-}" ]; then
-              curl -s --max-time 30 -X POST https://api.callmebot.com/whatsapp.php \
+              # O CallMeBot documenta apenas GET; telefone e chave sao segredos (mascarados no log).
+              resposta="$(curl -s --max-time 30 -G https://api.callmebot.com/whatsapp.php \
                 --data-urlencode "phone=$ALERT_PHONE" --data-urlencode "apikey=$CALLMEBOT_APIKEY" \
-                --data-urlencode "text=$1"$'\n'"$4" >/dev/null || echo "callmebot falhou"
+                --data-urlencode "text=$1"$'\n'"$4" || echo "sem resposta")"
+              echo "callmebot: $(printf '%s' "$resposta" | tr -d '\n' | head -c 150)"
             fi
           }
           gh label create incidente --color B60205 --description "Site fora do ar" 2>/dev/null || true
