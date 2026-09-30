@@ -22,6 +22,11 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      simular_queda:
+        description: "Simula uma queda para testar os alertas (a proxima execucao normal fecha o incidente)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -70,6 +75,10 @@ jobs:
           checar "Pagina publica /modelo" "$SITE/modelo"                 "200" 'id="topo"'
           checar "Banco/Auth (Kong)"      "$API/auth/v1/health"          "200|401"
           checar "Banco/API (REST)"       "$API/rest/v1/"                "200|401"
+
+          if [ "${{ inputs.simular_queda }}" = "true" ]; then
+            falhas+="- TESTE: queda simulada manualmente (nao ha problema real)"$'\n'
+          fi
 
           # Validade dos certificados TLS
           for host in suaigreja.top db.suaigreja.top; do
