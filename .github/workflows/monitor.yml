@@ -37,8 +37,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SITE: https://suaigreja.top
-  API: https://db.suaigreja.top
+  SITE: https://igrejoo.com.br
+  API: https://db.igrejoo.com.br
   DIAS_ALERTA_CERTIFICADO: "14"
   # Repete o aviso de "continua fora do ar" a cada N execucoes (6 x 5 min = 30 min)
   REAVISAR_A_CADA: "6"
@@ -84,7 +84,7 @@ jobs:
           fi
 
           # Validade dos certificados TLS
-          for host in suaigreja.top db.suaigreja.top; do
+          for host in igrejoo.com.br db.igrejoo.com.br; do
             fim="$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)"
             dias=$(( ( $(date -d "$fim" +%s) - $(date +%s) ) / 86400 ))
             echo "TLS  $host vence em $dias dia(s)"
